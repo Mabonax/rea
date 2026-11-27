@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "platform": "android",
+  "model": "Synthetic test device (not real hardware)",
+  "architecture": "arm64",
+  "components": {
+    "kernel": {
+      "state": "observed",
+      "evidence": [
+        "synthetic:kernel"
+      ]
+    },
+    "display": {
+      "state": "unknown",
+      "evidence": []
+    }
+  }
+}
