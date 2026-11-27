@@ -1,0 +1,23 @@
+name: Mobile Linux experimental tests
+on:
+  push:
+    branches: ["codex/mobile-linux-foundation"]
+    paths:
+      - "experiments/mobile-linux/**"
+      - ".github/workflows/mobile-linux-experimental.yml"
+      - "src/application/adb/MobileEvidence*"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  experimental:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: node --test experiments/mobile-linux/*.test.mjs
