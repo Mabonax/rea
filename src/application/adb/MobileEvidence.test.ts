@@ -45,3 +45,17 @@ it("calls only the three read-only operations", async () => {
   expect(calls).toEqual(["inspect_adb_device", "list_adb_features", "inspect_adb_display"]);
   expect(report.ok).toBe(true);
 });
+
+it("projects a planner-compatible profile without guessing missing hardware", () => {
+  const report = validateMobileEvidence([identity()]);
+  expect(report.profile).toMatchObject({
+    schema_version: 1, platform: "android", architecture: "arm64", components: {},
+  });
+});
+it("rejects invalid serial and cancelled collection before provider calls", async () => {
+  const service = { async execute(): Promise<never> { throw new Error("Unexpected call"); } };
+  expect(await collectMobileEvidence(service, "")).toMatchObject({ok:false,error:{_tag:"AnalysisInputError"}});
+  const controller = new AbortController();
+  controller.abort();
+  expect(await collectMobileEvidence(service, serial, {signal:controller.signal})).toMatchObject({ok:false,error:{_tag:"AnalysisCancelledError"}});
+});

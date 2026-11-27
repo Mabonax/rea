@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { AnalysisCancelledError, AnalysisInputError, AnalysisOutputError } from "../../domain/analysisErrorCore.js";
+import { err, ok } from "../../domain/result.js";
 import { parseEvidence } from "../../domain/evidence.js";
 import type { Evidence } from "../../domain/evidence.js";
 import type { AdbDeviceAnalysisService } from "./AdbDeviceAnalysisService.js";
@@ -73,16 +75,55 @@ export function validateMobileEvidence(input: readonly unknown[]) {
   const abi = properties.find((p) => p.name === "ro.product.cpu.abilist")?.value;
   const featureEvidence = records.get("list_adb_features");
   const displayEvidence = records.get("inspect_adb_display");
+  const declaredAbis = abi?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+  const features = featureEvidence === undefined
+    ? []
+    : featuresSchema.parse(featureEvidence.normalized_result).features.map((f) => f.name);
+  const display = displayEvidence === undefined
+    ? null
+    : displaySchema.parse(displayEvidence.normalized_result).physical_size;
+  const architectures = new Map([
+    ["arm64-v8a", "arm64"], ["armeabi-v7a", "arm"], ["armeabi", "arm"],
+    ["x86_64", "x86_64"], ["x86", "x86"],
+  ] as const);
+  const featureComponents = new Map<string, string>([
+    ["android.hardware.touchscreen", "touch"], ["android.hardware.wifi", "wifi"],
+    ["android.hardware.bluetooth", "bluetooth"], ["android.hardware.bluetooth_le", "bluetooth"],
+    ["android.hardware.usb.host", "usb"], ["android.hardware.usb.accessory", "usb"],
+    ["android.hardware.audio.output", "audio"], ["android.hardware.microphone", "audio"],
+    ["android.hardware.telephony", "modem"], ["android.hardware.camera", "camera"],
+    ["android.hardware.camera.any", "camera"],
+  ]);
+  const components: Record<string, { state: "observed"; evidence: string[] }> = {};
+  if (featureEvidence !== undefined) {
+    for (const feature of features) {
+      const component = featureComponents.get(feature);
+      if (component !== undefined)
+        components[component] = { state: "observed", evidence: [featureEvidence.evidence_id] };
+    }
+  }
+  if (displayEvidence !== undefined)
+    components.display = { state: "observed", evidence: [displayEvidence.evidence_id] };
+  const primaryAbi = declaredAbis[0];
+  const architecture = [...architectures].find(([key]) => key === primaryAbi)?.[1] ?? "unknown";
   return {
     schema_version: 1,
     model,
-    declared_abis: abi?.split(",").map((value) => value.trim()).filter(Boolean) ?? [],
-    features: featureEvidence === undefined
-      ? []
-      : featuresSchema.parse(featureEvidence.normalized_result).features.map((f) => f.name),
-    display: displayEvidence === undefined
-      ? null
-      : displaySchema.parse(displayEvidence.normalized_result).physical_size,
+    profile: {
+      schema_version: 1,
+      platform: "android",
+      model,
+      architecture,
+      components,
+      provenance: {
+        architecture_basis: "declared_primary_android_userspace_abi",
+        evidence_ids: [...records.values()].map((item) => item.evidence_id),
+        integrity: "semantic_identifier_validated",
+      },
+    },
+    declared_abis: declaredAbis,
+    features,
+    display,
     evidence_ids: [...records.values()].map((item) => item.evidence_id),
     integrity: "semantic_identifier_validated",
     hardware_attestation: "not_performed",
@@ -97,14 +138,23 @@ export async function collectMobileEvidence(
   serial: string,
   options?: ExecutionOptions,
 ) {
-  const selected = serialSchema.parse(serial);
+  const operationName = "collect_mobile_evidence";
+  const selected = serialSchema.safeParse(serial);
+  if (!selected.success)
+    return err(new AnalysisInputError(operationName));
   const records: Evidence[] = [];
   for (const operation of operations) {
-    if (options?.signal?.aborted) throw options.signal.reason ?? new Error("Cancelled");
-    const result = await service.execute(operation, { serial: selected }, options);
+    if (options?.signal?.aborted)
+      return err(new AnalysisCancelledError(operationName, { cause: options.signal.reason }));
+    const result = await service.execute(operation, { serial: selected.data }, options);
     if (!result.ok) return result;
     records.push(result.value);
   }
-  if (options?.signal?.aborted) throw options.signal.reason ?? new Error("Cancelled");
-  return { ok: true as const, value: validateMobileEvidence(records) };
+  if (options?.signal?.aborted)
+    return err(new AnalysisCancelledError(operationName, { cause: options.signal.reason }));
+  try {
+    return ok(validateMobileEvidence(records));
+  } catch {
+    return err(new AnalysisOutputError(operationName, "Invalid or inconsistent ADB evidence"));
+  }
 }
