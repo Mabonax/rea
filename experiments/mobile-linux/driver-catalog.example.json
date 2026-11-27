@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "drivers": [
+    {
+      "id": "synthetic-example",
+      "origin": "other",
+      "revision": "0000000000000000000000000000000000000000",
+      "path": "drivers/example.c",
+      "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "compatible": [
+        "example,chip"
+      ],
+      "config_all": [
+        "CONFIG_EXAMPLE"
+      ],
+      "firmware": [
+        "example/fw.bin"
+      ]
+    }
+  ]
+}
