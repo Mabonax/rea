@@ -1,0 +1,72 @@
+name: Mobile Linux pinned source smoke build
+on:
+  push:
+    branches: ["codex/mobile-linux-foundation"]
+    paths:
+      - ".github/workflows/mobile-linux-pinned-build.yml"
+      - "experiments/mobile-linux/source-boot.mjs"
+      - "experiments/mobile-linux/build-executor.mjs"
+      - "experiments/mobile-linux/busybox-build.mjs"
+      - "experiments/mobile-linux/build-plan.mjs"
+      - "experiments/mobile-linux/initramfs.mjs"
+      - "experiments/mobile-linux/qemu-boot.mjs"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-smoke:
+    if: github.ref == 'refs/heads/codex/mobile-linux-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      KREV: adc218676eef25575469234709c2d87185ca223a
+      BREV: 1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install compilation and emulator dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross make bc bison flex libssl-dev libelf-dev qemu-system-arm xz-utils
+      - name: Fetch exact upstream Git objects
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/rea-pinned"
+          mkdir -p "$root/output"
+          fetch_source() {
+            local name="$1" url="$2" revision="$3"
+            git init -q "$root/$name.git"
+            git -C "$root/$name.git" -c protocol.file.allow=never fetch --no-tags --depth=1 "$url" "$revision"
+            test "$(git -C "$root/$name.git" rev-parse FETCH_HEAD)" = "$revision"
+            git -C "$root/$name.git" fsck --full --no-dangling
+            git -C "$root/$name.git" archive --format=tar.gz --output="$root/$name.tar.gz" "$revision"
+            mkdir "$root/$name"
+            tar -xzf "$root/$name.tar.gz" -C "$root/$name" --no-same-owner --no-same-permissions
+          }
+          fetch_source kernel https://github.com/torvalds/linux.git "$KREV"
+          fetch_source busybox https://github.com/mirror/busybox.git "$BREV"
+          export KHASH="$(sha256sum "$root/kernel.tar.gz" | cut -d' ' -f1)"
+          export BHASH="$(sha256sum "$root/busybox.tar.gz" | cut -d' ' -f1)"
+          node -e 'const fs=require("node:fs");const e=process.env;fs.writeFileSync(process.argv[1],JSON.stringify({schema_version:1,target:"qemu-arm64-virt",kernel:{revision:e.KREV,archive_sha256:e.KHASH},busybox:{revision:e.BREV,archive_sha256:e.BHASH},jobs:2,virtio_extras:false},null,2))' "$root/input.json"
+          printf '%s\n' 'Source trust: fixed Git object identity via HTTPS; upstream signatures not independently verified; archive hashes generated locally.' > "$root/provenance.txt"
+          aarch64-linux-gnu-gcc --version >> "$root/provenance.txt"
+          qemu-system-aarch64 --version >> "$root/provenance.txt"
+      - name: Compile and boot
+        run: |
+          root="$RUNNER_TEMP/rea-pinned"
+          node experiments/mobile-linux/source-boot.mjs --execute "$root/input.json" "$root/kernel" "$root/kernel.tar.gz" "$root/busybox" "$root/busybox.tar.gz" "$root/output"
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-source-smoke-evidence
+          path: |
+            ${{ runner.temp }}/rea-pinned/input.json
+            ${{ runner.temp }}/rea-pinned/provenance.txt
+            ${{ runner.temp }}/rea-pinned/output/**/*.json
+            ${{ runner.temp }}/rea-pinned/output/**/*.log
+          if-no-files-found: warn
