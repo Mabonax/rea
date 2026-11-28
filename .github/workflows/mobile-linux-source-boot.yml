@@ -1,0 +1,70 @@
+name: Mobile Linux source-built ARM64 boot
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_revision:
+        description: Reviewed full torvalds/linux Git commit (40 hex)
+        required: true
+        type: string
+      kernel_sha256:
+        description: Expected SHA-256 of GitHub kernel tar.gz archive
+        required: true
+        type: string
+      busybox_revision:
+        description: Reviewed full mirror/busybox Git commit (40 hex)
+        required: true
+        type: string
+      busybox_sha256:
+        description: Expected SHA-256 of GitHub BusyBox tar.gz archive
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  source-boot:
+    if: github.ref == 'refs/heads/codex/mobile-linux-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross make bc bison flex libssl-dev libelf-dev qemu-system-arm xz-utils
+      - name: Verify and extract reviewed pinned sources
+        env:
+          KREV: ${{ inputs.kernel_revision }}
+          KHASH: ${{ inputs.kernel_sha256 }}
+          BREV: ${{ inputs.busybox_revision }}
+          BHASH: ${{ inputs.busybox_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$KREV" =~ ^[a-f0-9]{40}$ && "$BREV" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$KHASH" =~ ^[a-f0-9]{64}$ && "$BHASH" =~ ^[a-f0-9]{64}$ ]]
+          root="$RUNNER_TEMP/rea-source"
+          mkdir -p "$root/kernel" "$root/busybox" "$root/output"
+          curl --fail --location --max-time 600 --max-filesize 1073741824 "https://codeload.github.com/torvalds/linux/tar.gz/$KREV" -o "$root/kernel.tar.gz"
+          curl --fail --location --max-time 180 --max-filesize 67108864 "https://codeload.github.com/mirror/busybox/tar.gz/$BREV" -o "$root/busybox.tar.gz"
+          printf '%s  %s\n' "$KHASH" "$root/kernel.tar.gz" "$BHASH" "$root/busybox.tar.gz" | sha256sum --check
+          tar --extract --gzip --file "$root/kernel.tar.gz" --directory "$root/kernel" --strip-components=1 --no-same-owner --no-same-permissions
+          tar --extract --gzip --file "$root/busybox.tar.gz" --directory "$root/busybox" --strip-components=1 --no-same-owner --no-same-permissions
+          node -e 'const fs=require("node:fs");const e=process.env;fs.writeFileSync(process.argv[1],JSON.stringify({schema_version:1,target:"qemu-arm64-virt",kernel:{revision:e.KREV,archive_sha256:e.KHASH},busybox:{revision:e.BREV,archive_sha256:e.BHASH},jobs:2,virtio_extras:false}))' "$root/input.json"
+      - name: Compile and boot exact generated artifacts
+        run: |
+          root="$RUNNER_TEMP/rea-source"
+          node experiments/mobile-linux/source-boot.mjs --execute "$root/input.json" "$root/kernel" "$root/kernel.tar.gz" "$root/busybox" "$root/busybox.tar.gz" "$root/output"
+      - name: Retain build and boot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-linux-source-boot
+          path: |
+            ${{ runner.temp }}/rea-source/input.json
+            ${{ runner.temp }}/rea-source/output/**/*.json
+            ${{ runner.temp }}/rea-source/output/**/*.log
+          if-no-files-found: warn
