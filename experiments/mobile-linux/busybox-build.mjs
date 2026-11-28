@@ -4,11 +4,23 @@ import { join, isAbsolute } from "node:path";
 import { createBuildPlan } from "./build-plan.mjs";
 import { hashFile } from "./build-executor.mjs";
 import { validateBusybox } from "./initramfs.mjs";
+const requiredKeys=["STATIC","ASH","SH_IS_ASH","MOUNT","ECHO","UNAME"];
+// BusyBox 1.36.1 tc depends on legacy CBQ definitions removed from newer UAPI headers.
 export function staticConfig(text){
- const keys=["STATIC","ASH","SH_IS_ASH","MOUNT","ECHO","UNAME"];
- const map=new Set(keys.map(k=>"CONFIG_"+k));
+ const keys=requiredKeys;
+ const map=new Set([...keys,"TC"].map(k=>"CONFIG_"+k));
  const lines=text.split(/\r?\n/u).filter(line=>!map.has(/^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)/u.exec(line)?.[1]));
- return lines.join("\n")+"\n"+keys.map(k=>"CONFIG_"+k+"=y").join("\n")+"\n";
+ return lines.join("\n")+"\n"+keys.map(k=>"CONFIG_"+k+"=y").join("\n")+"\n# CONFIG_TC is not set\n";
+}
+export function validateStaticConfig(text){
+ const lines=text.split(/\r?\n/u);
+ for(const key of requiredKeys){
+  const symbol="CONFIG_"+key;
+  const declarations=lines.filter(line=>line.startsWith(symbol+"=")||line==="# "+symbol+" is not set");
+  if(declarations.length!==1||declarations[0]!==symbol+"=y")throw new Error("Missing or conflicting effective BusyBox option "+key);
+ }
+ const tc=lines.filter(line=>line.startsWith("CONFIG_TC=")||line==="# CONFIG_TC is not set");
+ if(tc.length!==1||tc[0]!=="# CONFIG_TC is not set")throw new Error("Effective BusyBox configuration must disable TC");
 }
 export async function buildBusybox(input,options){
  if(process.platform!=="linux"||options?.approved!==true)throw new Error("Linux host and explicit approval required");
@@ -38,7 +50,7 @@ export async function buildBusybox(input,options){
  // BusyBox supports oldconfig with defaults via its non-interactive silentoldconfig target.
  await step("configure",["silentoldconfig"],120000);
  const effective=await readFile(config,"utf8");
- for(const key of ["STATIC","ASH","SH_IS_ASH","MOUNT","ECHO","UNAME"])if(!effective.split(/\r?\n/u).includes("CONFIG_"+key+"=y"))throw new Error("Missing effective BusyBox option "+key);
+ validateStaticConfig(effective);
  await step("compile",["-j"+plan.jobs,"busybox"],1800000);
  const binary=join(out,"busybox");
  if((await stat(binary)).size>32*1024*1024)throw new Error("BusyBox too large");
