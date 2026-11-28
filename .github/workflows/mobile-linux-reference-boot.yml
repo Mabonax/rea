@@ -1,0 +1,59 @@
+name: Mobile Linux reference ARM64 boot
+on:
+  push:
+    branches: ["codex/mobile-linux-foundation"]
+    paths:
+      - ".github/workflows/mobile-linux-reference-boot.yml"
+      - "experiments/mobile-linux/reference-boot.mjs"
+      - "experiments/mobile-linux/initramfs*.mjs"
+      - "experiments/mobile-linux/qemu-boot.mjs"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reference-boot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install emulator and package tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm xz-utils
+      - name: Retrieve signed Debian package indexes
+        run: |
+          mkdir -p "$RUNNER_TEMP/rea-apt/lists/partial" "$RUNNER_TEMP/rea-packages"
+          printf '%s\n' 'deb [arch=arm64 signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian bookworm main' 'deb [arch=arm64 signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian-security bookworm-security main' > "$RUNNER_TEMP/rea-apt/sources.list"
+          sudo apt-get install -y debian-archive-keyring
+          opts=(-o "Dir::Etc::sourcelist=$RUNNER_TEMP/rea-apt/sources.list" -o Dir::Etc::sourceparts=- -o "Dir::State::lists=$RUNNER_TEMP/rea-apt/lists" -o APT::Architecture=arm64 -o APT::Architectures=arm64)
+          sudo apt-get "${opts[@]}" update
+          cd "$RUNNER_TEMP/rea-packages"
+          apt-get "${opts[@]}" download busybox-static:arm64 linux-image-arm64:arm64
+          kernel_meta=$(find . -maxdepth 1 -name 'linux-image-arm64_*.deb' -print -quit)
+          dependency=$(dpkg-deb -f "$kernel_meta" Depends | grep -oE 'linux-image-[0-9][A-Za-z0-9.+~-]*-arm64' | head -n1)
+          test -n "$dependency"
+          apt-get "${opts[@]}" download "$dependency:arm64"
+          mkdir -p extracted
+          for package in ./*.deb; do dpkg-deb -x "$package" extracted; done
+          sha256sum ./*.deb > package-digests.txt
+          for package in ./*.deb; do dpkg-deb -f "$package" Package Version Architecture; done > package-versions.txt
+      - name: Generate initramfs and boot reference kernel
+        run: |
+          mkdir -p "$RUNNER_TEMP/rea-boot-output"
+          node experiments/mobile-linux/reference-boot.mjs "$RUNNER_TEMP/rea-packages/extracted" "$RUNNER_TEMP/rea-boot-output"
+      - name: Retain reference boot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-linux-reference-boot
+          path: |
+            ${{ runner.temp }}/rea-boot-output/**/*.json
+            ${{ runner.temp }}/rea-boot-output/**/*.log
+            ${{ runner.temp }}/rea-packages/package-digests.txt
+            ${{ runner.temp }}/rea-packages/package-versions.txt
+          if-no-files-found: warn
